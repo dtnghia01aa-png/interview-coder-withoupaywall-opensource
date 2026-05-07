@@ -240,6 +240,12 @@ async function createWindow(): Promise<void> {
 
   state.mainWindow = new BrowserWindow(windowSettings)
 
+  // CRITICAL: apply screen-capture exclusion BEFORE any content loads, so that
+  // even the brief flash of HTML during init cannot be picked up by browser
+  // getDisplayMedia (Codility Reveal, Zoom share, etc.) or PrintScreen.
+  // On Windows 10 build 19041+ this maps to WDA_EXCLUDEFROMCAPTURE.
+  state.mainWindow.setContentProtection(true)
+
   // Add more detailed logging for window events
   state.mainWindow.webContents.on("did-finish-load", () => {
     console.log("Window finished loading")

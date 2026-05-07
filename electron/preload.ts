@@ -215,8 +215,10 @@ const electronAPI = {
     }
   },
   checkApiKey: () => ipcRenderer.invoke("check-api-key"),
-  validateApiKey: (apiKey: string) => 
+  validateApiKey: (apiKey: string) =>
     ipcRenderer.invoke("validate-api-key", apiKey),
+  testClaudeCli: () => ipcRenderer.invoke("test-claude-cli"),
+  checkCaptureProtection: () => ipcRenderer.invoke("check-capture-protection"),
   openExternal: (url: string) => 
     ipcRenderer.invoke("openExternal", url),
   onApiKeyInvalid: (callback: () => void) => {

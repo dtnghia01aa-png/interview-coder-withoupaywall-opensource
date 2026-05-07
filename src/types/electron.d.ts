@@ -58,6 +58,21 @@ export interface ElectronAPI {
   updateConfig: (config: { apiKey?: string; model?: string }) => Promise<boolean>
   checkApiKey: () => Promise<boolean>
   validateApiKey: (apiKey: string) => Promise<{ valid: boolean; error?: string }>
+  testClaudeCli: () => Promise<{
+    ok: boolean
+    executable: string
+    version?: string
+    ping?: string
+    error?: string
+    stage?: "version" | "ping"
+  }>
+  checkCaptureProtection: () => Promise<{
+    platform: string
+    windowExists: boolean
+    protectionApplied: boolean
+    supportsExcludeFromCapture: boolean
+    windowsBuild?: number
+  }>
   openLink: (url: string) => void
   onApiKeyInvalid: (callback: () => void) => () => void
   removeListener: (eventName: string, callback: (...args: any[]) => void) => void

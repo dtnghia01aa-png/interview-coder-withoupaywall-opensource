@@ -13,7 +13,7 @@ import { Button } from "../ui/button";
 import { Settings } from "lucide-react";
 import { useToast } from "../../contexts/toast";
 
-type APIProvider = "openai" | "gemini" | "anthropic";
+type APIProvider = "openai" | "gemini" | "anthropic" | "claude-code";
 
 type AIModel = {
   id: string;
@@ -28,7 +28,26 @@ type ModelCategory = {
   openaiModels: AIModel[];
   geminiModels: AIModel[];
   anthropicModels: AIModel[];
+  claudeCodeModels: AIModel[];
 };
+
+const claudeCodeModelList: AIModel[] = [
+  {
+    id: "sonnet",
+    name: "Sonnet (latest)",
+    description: "Balanced speed and quality. Recommended default."
+  },
+  {
+    id: "opus",
+    name: "Opus (latest)",
+    description: "Top-tier reasoning. Slower and uses more of your subscription quota."
+  },
+  {
+    id: "haiku",
+    name: "Haiku (latest)",
+    description: "Fastest and cheapest; better for simple problems."
+  }
+];
 
 // Define available models for each category
 const modelCategories: ModelCategory[] = [
@@ -76,7 +95,8 @@ const modelCategories: ModelCategory[] = [
         name: "Claude 3 Opus",
         description: "Top-level intelligence, fluency, and understanding"
       }
-    ]
+    ],
+    claudeCodeModels: claudeCodeModelList
   },
   {
     key: 'solutionModel',
@@ -122,7 +142,8 @@ const modelCategories: ModelCategory[] = [
         name: "Claude 3 Opus",
         description: "Top-level intelligence, fluency, and understanding"
       }
-    ]
+    ],
+    claudeCodeModels: claudeCodeModelList
   },
   {
     key: 'debuggingModel',
@@ -168,7 +189,8 @@ const modelCategories: ModelCategory[] = [
         name: "Claude 3 Opus",
         description: "Top-level intelligence, fluency, and understanding"
       }
-    ]
+    ],
+    claudeCodeModels: claudeCodeModelList
   }
 ];
 
@@ -176,6 +198,19 @@ interface SettingsDialogProps {
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
 }
+
+type CliTestState =
+  | { status: "idle" }
+  | { status: "running" }
+  | { status: "ok"; version: string; executable: string; ping: string; capture?: CaptureState }
+  | { status: "error"; error: string; executable?: string; version?: string; stage?: string };
+
+type CaptureState = {
+  applied: boolean;
+  supports: boolean;
+  platform: string;
+  windowsBuild?: number;
+};
 
 export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDialogProps) {
   const [open, setOpen] = useState(externalOpen || false);
@@ -185,7 +220,43 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
   const [solutionModel, setSolutionModel] = useState("gpt-4o");
   const [debuggingModel, setDebuggingModel] = useState("gpt-4o");
   const [isLoading, setIsLoading] = useState(false);
+  const [cliTest, setCliTest] = useState<CliTestState>({ status: "idle" });
   const { showToast } = useToast();
+
+  const handleTestClaudeCli = async () => {
+    setCliTest({ status: "running" });
+    try {
+      const [cliResult, captureResult] = await Promise.all([
+        window.electronAPI.testClaudeCli(),
+        window.electronAPI.checkCaptureProtection().catch(() => null),
+      ]);
+      const capture: CaptureState | undefined = captureResult ? {
+        applied: captureResult.protectionApplied,
+        supports: captureResult.supportsExcludeFromCapture,
+        platform: captureResult.platform,
+        windowsBuild: captureResult.windowsBuild,
+      } : undefined;
+      if (cliResult.ok) {
+        setCliTest({
+          status: "ok",
+          version: cliResult.version || "",
+          executable: cliResult.executable,
+          ping: cliResult.ping || "",
+          capture,
+        });
+      } else {
+        setCliTest({
+          status: "error",
+          error: cliResult.error || "Unknown error",
+          executable: cliResult.executable,
+          version: cliResult.version,
+          stage: cliResult.stage,
+        });
+      }
+    } catch (err: any) {
+      setCliTest({ status: "error", error: err?.message || "Test failed" });
+    }
+  };
 
   // Sync with external open state
   useEffect(() => {
@@ -237,7 +308,7 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
   // Handle API provider change
   const handleProviderChange = (provider: APIProvider) => {
     setApiProvider(provider);
-    
+
     // Reset models to defaults when changing provider
     if (provider === "openai") {
       setExtractionModel("gpt-4o");
@@ -251,6 +322,10 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
       setExtractionModel("claude-3-7-sonnet-20250219");
       setSolutionModel("claude-3-7-sonnet-20250219");
       setDebuggingModel("claude-3-7-sonnet-20250219");
+    } else if (provider === "claude-code") {
+      setExtractionModel("sonnet");
+      setSolutionModel("sonnet");
+      setDebuggingModel("sonnet");
     }
   };
 
@@ -387,12 +462,94 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
                 </div>
               </div>
             </div>
+            <div
+              className={`mt-2 p-2 rounded-lg cursor-pointer transition-colors ${
+                apiProvider === "claude-code"
+                  ? "bg-white/10 border border-white/20"
+                  : "bg-black/30 border border-white/5 hover:bg-white/5"
+              }`}
+              onClick={() => handleProviderChange("claude-code")}
+            >
+              <div className="flex items-center gap-2">
+                <div
+                  className={`w-3 h-3 rounded-full ${
+                    apiProvider === "claude-code" ? "bg-white" : "bg-white/20"
+                  }`}
+                />
+                <div className="flex flex-col">
+                  <p className="font-medium text-white text-sm">Claude Code (Subscription)</p>
+                  <p className="text-xs text-white/60">
+                    Uses your local <code>claude</code> CLI session — no API key needed.
+                  </p>
+                </div>
+              </div>
+            </div>
           </div>
           
+          {apiProvider === "claude-code" ? (
+            <div className="space-y-3 p-3 rounded-md bg-white/5 border border-white/10">
+              <p className="text-sm text-white/90">
+                Using the local Claude Code CLI — no API key required.
+              </p>
+              <p className="text-xs text-white/60">
+                Make sure <code className="text-white/80">claude --version</code> works in your terminal. If the app can't find it, set the <code className="text-white/80">CLAUDE_CLI_PATH</code> environment variable to its full path.
+              </p>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="border-white/20 hover:bg-white/10 text-white text-xs h-8 px-3"
+                  onClick={handleTestClaudeCli}
+                  disabled={cliTest.status === "running"}
+                >
+                  {cliTest.status === "running" ? "Testing..." : "Test Claude Code CLI"}
+                </Button>
+                {cliTest.status === "ok" && (
+                  <span className="text-xs text-emerald-400">✓ CLI ready ({cliTest.version})</span>
+                )}
+                {cliTest.status === "error" && (
+                  <span className="text-xs text-red-400">✗ Test failed</span>
+                )}
+              </div>
+              {cliTest.status === "ok" && (
+                <div className="text-[11px] text-white/70 space-y-1 mt-1">
+                  <div><span className="text-white/50">Path:</span> <code className="text-white/80 break-all">{cliTest.executable}</code></div>
+                  <div><span className="text-white/50">Ping reply:</span> <code className="text-white/80">{cliTest.ping || "(empty)"}</code></div>
+                  {cliTest.capture && (
+                    <div>
+                      <span className="text-white/50">Screen-capture protection:</span>{" "}
+                      {cliTest.capture.applied && cliTest.capture.supports ? (
+                        <span className="text-emerald-400">
+                          ✓ Active — invisible to Codility, Zoom (older), browser screen-share, and PrintScreen
+                          {cliTest.capture.platform === "win32" && cliTest.capture.windowsBuild
+                            ? ` (Windows build ${cliTest.capture.windowsBuild})`
+                            : ""}
+                        </span>
+                      ) : !cliTest.capture.supports ? (
+                        <span className="text-amber-400">
+                          ⚠ Your OS may not support full capture exclusion (needs Windows 10 build 19041+ or macOS).
+                        </span>
+                      ) : (
+                        <span className="text-amber-400">⚠ Window not yet visible — applies on next launch.</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+              {cliTest.status === "error" && (
+                <div className="text-[11px] text-red-300/90 mt-1 whitespace-pre-wrap break-words">
+                  {cliTest.executable && (
+                    <div><span className="text-white/50">Path tried:</span> <code className="text-white/80 break-all">{cliTest.executable}</code></div>
+                  )}
+                  {cliTest.error}
+                </div>
+              )}
+            </div>
+          ) : (
           <div className="space-y-2">
             <label className="text-sm font-medium text-white" htmlFor="apiKey">
-            {apiProvider === "openai" ? "OpenAI API Key" : 
-             apiProvider === "gemini" ? "Gemini API Key" : 
+            {apiProvider === "openai" ? "OpenAI API Key" :
+             apiProvider === "gemini" ? "Gemini API Key" :
              "Anthropic API Key"}
             </label>
             <Input
@@ -456,7 +613,8 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
               )}
             </div>
           </div>
-          
+          )}
+
           <div className="space-y-2 mt-4">
             <label className="text-sm font-medium text-white mb-2 block">Keyboard Shortcuts</label>
             <div className="bg-black/30 border border-white/10 rounded-lg p-3">
@@ -508,9 +666,10 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
             
             {modelCategories.map((category) => {
               // Get the appropriate model list based on selected provider
-              const models = 
-                apiProvider === "openai" ? category.openaiModels : 
+              const models =
+                apiProvider === "openai" ? category.openaiModels :
                 apiProvider === "gemini" ? category.geminiModels :
+                apiProvider === "claude-code" ? category.claudeCodeModels :
                 category.anthropicModels;
               
               return (
@@ -575,7 +734,7 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
           <Button
             className="px-4 py-3 bg-white text-black rounded-xl font-medium hover:bg-white/90 transition-colors"
             onClick={handleSave}
-            disabled={isLoading || !apiKey}
+            disabled={isLoading || (apiProvider !== "claude-code" && !apiKey)}
           >
             {isLoading ? "Saving..." : "Save Settings"}
           </Button>

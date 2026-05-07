@@ -7,13 +7,15 @@ import { OpenAI } from "openai"
 
 interface Config {
   apiKey: string;
-  apiProvider: "openai" | "gemini" | "anthropic";  // Added provider selection
+  apiProvider: "openai" | "gemini" | "anthropic" | "claude-code";  // Added Claude Code CLI option
   extractionModel: string;
   solutionModel: string;
   debuggingModel: string;
   language: string;
   opacity: number;
 }
+
+type ApiProvider = Config["apiProvider"];
 
 export class ConfigHelper extends EventEmitter {
   private configPath: string;
@@ -58,7 +60,7 @@ export class ConfigHelper extends EventEmitter {
   /**
    * Validate and sanitize model selection to ensure only allowed models are used
    */
-  private sanitizeModelSelection(model: string, provider: "openai" | "gemini" | "anthropic"): string {
+  private sanitizeModelSelection(model: string, provider: ApiProvider): string {
     if (provider === "openai") {
       // Only allow gpt-4o and gpt-4o-mini for OpenAI
       const allowedModels = ['gpt-4o', 'gpt-4o-mini'];
@@ -83,6 +85,14 @@ export class ConfigHelper extends EventEmitter {
         return 'claude-3-7-sonnet-20250219';
       }
       return model;
+    } else if (provider === "claude-code") {
+      // Claude Code CLI accepts model aliases (sonnet/opus/haiku) or full IDs
+      const allowedAliases = ['sonnet', 'opus', 'haiku'];
+      if (allowedAliases.includes(model)) return model;
+      // Allow any string starting with "claude-" as a full model ID
+      if (model && model.startsWith('claude-')) return model;
+      console.warn(`Invalid Claude Code model specified: ${model}. Using default: sonnet`);
+      return 'sonnet';
     }
     // Default fallback
     return model;
@@ -95,7 +105,12 @@ export class ConfigHelper extends EventEmitter {
         const config = JSON.parse(configData);
         
         // Ensure apiProvider is a valid value
-        if (config.apiProvider !== "openai" && config.apiProvider !== "gemini"  && config.apiProvider !== "anthropic") {
+        if (
+          config.apiProvider !== "openai" &&
+          config.apiProvider !== "gemini" &&
+          config.apiProvider !== "anthropic" &&
+          config.apiProvider !== "claude-code"
+        ) {
           config.apiProvider = "gemini"; // Default to Gemini if invalid
         }
         
@@ -178,6 +193,10 @@ export class ConfigHelper extends EventEmitter {
           updates.extractionModel = "claude-3-7-sonnet-20250219";
           updates.solutionModel = "claude-3-7-sonnet-20250219";
           updates.debuggingModel = "claude-3-7-sonnet-20250219";
+        } else if (updates.apiProvider === "claude-code") {
+          updates.extractionModel = "sonnet";
+          updates.solutionModel = "sonnet";
+          updates.debuggingModel = "sonnet";
         } else {
           updates.extractionModel = "gemini-2.0-flash";
           updates.solutionModel = "gemini-2.0-flash";
@@ -215,17 +234,24 @@ export class ConfigHelper extends EventEmitter {
   }
 
   /**
-   * Check if the API key is configured
+   * Check if the API key is configured (or, for claude-code, if a CLI is reachable)
    */
   public hasApiKey(): boolean {
     const config = this.loadConfig();
+    if (config.apiProvider === "claude-code") {
+      // Claude Code uses the local CLI's OAuth session — no API key required.
+      // We treat this provider as "configured" once selected; the actual CLI
+      // availability check happens at processing time with a clear error.
+      return true;
+    }
     return !!config.apiKey && config.apiKey.trim().length > 0;
   }
   
   /**
    * Validate the API key format
    */
-  public isValidApiKeyFormat(apiKey: string, provider?: "openai" | "gemini" | "anthropic" ): boolean {
+  public isValidApiKeyFormat(apiKey: string, provider?: ApiProvider): boolean {
+    if (provider === "claude-code") return true;
     // If provider is not specified, attempt to auto-detect
     if (!provider) {
       if (apiKey.trim().startsWith('sk-')) {
@@ -288,7 +314,11 @@ export class ConfigHelper extends EventEmitter {
   /**
    * Test API key with the selected provider
    */
-  public async testApiKey(apiKey: string, provider?: "openai" | "gemini" | "anthropic"): Promise<{valid: boolean, error?: string}> {
+  public async testApiKey(apiKey: string, provider?: ApiProvider): Promise<{valid: boolean, error?: string}> {
+    if (provider === "claude-code") {
+      // No key to test; surface CLI presence instead.
+      return { valid: true };
+    }
     // Auto-detect provider based on key format if not specified
     if (!provider) {
       if (apiKey.trim().startsWith('sk-')) {

@@ -2,8 +2,67 @@
 
 import { ipcMain, shell, dialog } from "electron"
 import { randomBytes } from "crypto"
+import { spawn } from "node:child_process"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
 import { IIpcHandlerDeps } from "./main"
 import { configHelper } from "./ConfigHelper"
+
+function resolveClaudeExecutable(): string {
+  const override = process.env.CLAUDE_CLI_PATH;
+  if (override && fs.existsSync(override)) return override;
+  const home = os.homedir();
+  const candidates = process.platform === "win32"
+    ? [
+        path.join(home, ".local", "bin", "claude.exe"),
+        path.join(home, "AppData", "Roaming", "npm", "claude.cmd"),
+      ]
+    : [
+        path.join(home, ".local", "bin", "claude"),
+        "/usr/local/bin/claude",
+        "/opt/homebrew/bin/claude",
+      ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return "claude";
+}
+
+interface CliTestResult {
+  ok: boolean;
+  executable: string;
+  version?: string;
+  ping?: string;
+  error?: string;
+  stage?: "version" | "ping";
+}
+
+function runOnce(executable: string, args: string[], timeoutMs: number): Promise<{ code: number | null; stdout: string; stderr: string; spawnError?: string }> {
+  return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    const child = spawn(executable, args, {
+      shell: false,
+      windowsHide: true,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const timer = setTimeout(() => {
+      try { child.kill("SIGTERM"); } catch { /* ignore */ }
+    }, timeoutMs);
+    child.on("error", (err: NodeJS.ErrnoException) => {
+      clearTimeout(timer);
+      resolve({ code: null, stdout, stderr, spawnError: err.code === "ENOENT" ? "ENOENT" : err.message });
+    });
+    child.stdout.on("data", (c) => { stdout += c.toString(); });
+    child.stderr.on("data", (c) => { stderr += c.toString(); });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ code, stdout, stderr });
+    });
+  });
+}
 
 export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
   console.log("Initializing IPC handlers")
@@ -24,15 +83,103 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
   ipcMain.handle("validate-api-key", async (_event, apiKey) => {
     // First check the format
     if (!configHelper.isValidApiKeyFormat(apiKey)) {
-      return { 
-        valid: false, 
-        error: "Invalid API key format. OpenAI API keys start with 'sk-'" 
+      return {
+        valid: false,
+        error: "Invalid API key format. OpenAI API keys start with 'sk-'"
       };
     }
-    
+
     // Then test the API key with OpenAI
     const result = await configHelper.testApiKey(apiKey);
     return result;
+  })
+
+  // Claude Code CLI: probe `claude --version` then a minimal prompt to confirm
+  // both that the binary is reachable AND that the user's subscription session
+  // is active (no "please run /login" wall).
+  ipcMain.handle("test-claude-cli", async (): Promise<CliTestResult> => {
+    const executable = resolveClaudeExecutable();
+
+    const versionRun = await runOnce(executable, ["--version"], 15000);
+    if (versionRun.spawnError === "ENOENT") {
+      return {
+        ok: false,
+        executable,
+        stage: "version",
+        error: `Could not find the Claude Code CLI. Tried: ${executable}. Install it from https://docs.claude.com/en/docs/claude-code, or set the CLAUDE_CLI_PATH environment variable to its full path.`,
+      };
+    }
+    if (versionRun.spawnError) {
+      return { ok: false, executable, stage: "version", error: `Failed to launch: ${versionRun.spawnError}` };
+    }
+    if (versionRun.code !== 0) {
+      return {
+        ok: false,
+        executable,
+        stage: "version",
+        error: `\`claude --version\` exited with code ${versionRun.code}. Stderr: ${versionRun.stderr.trim().slice(0, 300)}`,
+      };
+    }
+    const version = versionRun.stdout.trim();
+
+    const pingRun = await runOnce(
+      executable,
+      ["-p", "Reply with exactly the word OK and nothing else.", "--output-format", "json", "--model", "haiku", "--permission-mode", "bypassPermissions"],
+      60000,
+    );
+    if (pingRun.code !== 0) {
+      return {
+        ok: false,
+        executable,
+        version,
+        stage: "ping",
+        error: `Test prompt failed (exit ${pingRun.code}). The CLI is installed but your session may not be authenticated — try running \`claude\` in a terminal and signing in. Stderr: ${pingRun.stderr.trim().slice(0, 300)}`,
+      };
+    }
+    try {
+      const parsed = JSON.parse(pingRun.stdout);
+      if (parsed && typeof parsed.result === "string" && !parsed.is_error) {
+        return { ok: true, executable, version, ping: parsed.result.trim() };
+      }
+      return {
+        ok: false,
+        executable,
+        version,
+        stage: "ping",
+        error: parsed?.result || parsed?.error || "Test prompt returned an error response.",
+      };
+    } catch (err: any) {
+      return {
+        ok: false,
+        executable,
+        version,
+        stage: "ping",
+        error: `Could not parse CLI JSON output: ${err.message}`,
+      };
+    }
+  })
+
+  // Reports the actual screen-capture protection state of the live window.
+  // Used by Settings to give the user a clear "you are invisible to capture" signal.
+  ipcMain.handle("check-capture-protection", () => {
+    const mainWindow = deps.getMainWindow();
+    const winVer = process.platform === "win32" ? os.release() : "";
+    // Win10 2004+ (build 19041) supports WDA_EXCLUDEFROMCAPTURE.
+    const buildNum = winVer ? Number(winVer.split(".")[2] || 0) : 0;
+    const supportsExcludeFromCapture =
+      process.platform === "darwin" ||
+      (process.platform === "win32" && buildNum >= 19041);
+    return {
+      platform: process.platform,
+      windowExists: !!mainWindow,
+      // Electron's setContentProtection is one-way; we re-assert it here in
+      // case anything cleared it, then report success.
+      protectionApplied: !!mainWindow && (() => {
+        try { mainWindow.setContentProtection(true); return true; } catch { return false; }
+      })(),
+      supportsExcludeFromCapture,
+      windowsBuild: buildNum || undefined,
+    };
   })
 
   // Credits handlers

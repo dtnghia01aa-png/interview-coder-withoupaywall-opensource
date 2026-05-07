@@ -4,12 +4,13 @@
   "main": "./dist-electron/main.js",
   "scripts": {
     "clean": "npx rimraf dist dist-electron",
-    "dev": "cross-env NODE_ENV=development npm run clean && concurrently \"tsc -w -p tsconfig.electron.json\" \"vite\" \"wait-on -t 30000 http://localhost:54321 && electron ./dist-electron/main.js\"",
+    "dev": "cross-env NODE_ENV=development npm run clean && vite",
     "test": "echo \"No tests defined. Please contribute if you like\" && exit 0",
     "lint": "npx eslint .",
-    "start": "cross-env NODE_ENV=development concurrently \"tsc -p tsconfig.electron.json\" \"vite\" \"wait-on -t 30000 http://localhost:54321 && electron ./dist-electron/main.js\"",
+    "start": "cross-env NODE_ENV=development vite",
     "build": "cross-env NODE_ENV=production npm run clean && vite build && tsc -p tsconfig.electron.json",
     "run-prod": "cross-env NODE_ENV=production electron ./dist-electron/main.js",
+    "verify-capture": "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify-capture-protection.ps1",
     "package": "npm run build && electron-builder build",
     "package-mac": "npm run build && electron-builder build --mac",
     "package-win": "npm run build && electron-builder build --win"
