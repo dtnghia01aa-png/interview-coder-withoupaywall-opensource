@@ -8,26 +8,7 @@ import os from "node:os"
 import path from "node:path"
 import { IIpcHandlerDeps } from "./main"
 import { configHelper } from "./ConfigHelper"
-
-function resolveClaudeExecutable(): string {
-  const override = process.env.CLAUDE_CLI_PATH;
-  if (override && fs.existsSync(override)) return override;
-  const home = os.homedir();
-  const candidates = process.platform === "win32"
-    ? [
-        path.join(home, ".local", "bin", "claude.exe"),
-        path.join(home, "AppData", "Roaming", "npm", "claude.cmd"),
-      ]
-    : [
-        path.join(home, ".local", "bin", "claude"),
-        "/usr/local/bin/claude",
-        "/opt/homebrew/bin/claude",
-      ];
-  for (const c of candidates) {
-    if (fs.existsSync(c)) return c;
-  }
-  return "claude";
-}
+import { prepareSpawn, resolveClaudeExecutable } from "./claudeCli"
 
 interface CliTestResult {
   ok: boolean;
@@ -42,8 +23,9 @@ function runOnce(executable: string, args: string[], timeoutMs: number): Promise
   return new Promise((resolve) => {
     let stdout = "";
     let stderr = "";
-    const child = spawn(executable, args, {
-      shell: false,
+    const spec = prepareSpawn(executable, args);
+    const child = spawn(spec.command, spec.args, {
+      shell: spec.shell,
       windowsHide: true,
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -248,6 +230,17 @@ export function initializeIpcHandlers(deps: IIpcHandlerDeps): void {
     }
     
     await deps.processingHelper?.processScreenshots()
+  })
+
+  // Study mode: explain a theory / aptitude question from the queued screenshots
+  ipcMain.handle("study-analyze", async () => {
+    if (!configHelper.hasApiKey()) {
+      return { success: false, error: "API key required" }
+    }
+    if (!deps.processingHelper) {
+      return { success: false, error: "Processing helper unavailable" }
+    }
+    return deps.processingHelper.analyzeStudyQuestion()
   })
 
   // Window dimension handlers

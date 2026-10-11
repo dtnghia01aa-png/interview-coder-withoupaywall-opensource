@@ -2,7 +2,6 @@
 import fs from "node:fs"
 import path from "node:path"
 import os from "node:os"
-import { spawn } from "node:child_process"
 import { ScreenshotHelper } from "./ScreenshotHelper"
 import { IProcessingHelperDeps } from "./main"
 import * as axios from "axios"
@@ -10,6 +9,8 @@ import { app, BrowserWindow, dialog } from "electron"
 import { OpenAI } from "openai"
 import { configHelper } from "./ConfigHelper"
 import Anthropic from '@anthropic-ai/sdk';
+import { runClaudeCli } from "./claudeCli"
+import { buildStudyPrompt, parseLooseJson, parseStudyResult, StudyResult } from "./studyMode"
 
 // Interface for Gemini API requests
 interface GeminiMessage {
@@ -55,6 +56,7 @@ export class ProcessingHelper {
   // AbortControllers for API requests
   private currentProcessingAbortController: AbortController | null = null
   private currentExtraProcessingAbortController: AbortController | null = null
+  private currentStudyAbortController: AbortController | null = null
 
   constructor(deps: IProcessingHelperDeps) {
     this.deps = deps
@@ -205,166 +207,111 @@ export class ProcessingHelper {
     }
   }
 
-  /**
-   * Locate the `claude` CLI executable. Checks (in order):
-   *   1) CLAUDE_CLI_PATH env var
-   *   2) ~/.local/bin/claude(.exe) (default install location)
-   *   3) bare "claude" — relies on PATH resolution at spawn time
-   */
-  private resolveClaudeExecutable(): string {
-    const override = process.env.CLAUDE_CLI_PATH;
-    if (override && fs.existsSync(override)) return override;
-
-    const home = os.homedir();
-    const candidates = process.platform === "win32"
-      ? [
-          path.join(home, ".local", "bin", "claude.exe"),
-          path.join(home, "AppData", "Roaming", "npm", "claude.cmd"),
-        ]
-      : [
-          path.join(home, ".local", "bin", "claude"),
-          "/usr/local/bin/claude",
-          "/opt/homebrew/bin/claude",
-        ];
-
-    for (const c of candidates) {
-      if (fs.existsSync(c)) return c;
-    }
-    return "claude";
+  private parseLooseJson(text: string): any {
+    return parseLooseJson(text);
   }
 
   /**
-   * Invoke the local Claude Code CLI in non-interactive print mode.
-   * Returns the model's text response.
+   * Study mode: explain a theory / aptitude / technical-concept question from
+   * the queued screenshots. Learning aid — returns reasoning, not just a letter.
    */
-  private async runClaudeCli(opts: {
-    prompt: string;
-    imagePaths: string[];
-    model: string;
-    signal: AbortSignal;
-    onProgress?: (msg: string) => void;
-  }): Promise<{ text?: string; error?: string }> {
-    const { prompt, imagePaths, model, signal, onProgress } = opts;
-    const executable = this.resolveClaudeExecutable();
-
-    // Build argv. We rely on --output-format json to get a parseable wrapper,
-    // and grant Read access to the dirs holding the screenshots so the model
-    // can pull image bytes via the Read tool.
-    const dirs = Array.from(new Set(imagePaths.map(p => path.dirname(p))));
-    // NOTE: --add-dir is a variadic option in the CLI's argument parser; it
-    // greedily consumes every subsequent positional. So we MUST NOT pass the
-    // prompt as a positional after --add-dir. Pipe it via stdin instead.
-    const args: string[] = [
-      "-p",
-      "--output-format", "json",
-      "--input-format", "text",
-      "--model", model,
-      "--permission-mode", "bypassPermissions",
-      "--tools", "Read",
-    ];
-    for (const d of dirs) {
-      args.push("--add-dir", d);
+  public async analyzeStudyQuestion(): Promise<{ success: boolean; data?: StudyResult; error?: string }> {
+    const paths = this.screenshotHelper.getScreenshotQueue().filter(p => fs.existsSync(p));
+    if (paths.length === 0) {
+      return { success: false, error: "No screenshots to analyze. Capture the question first." };
     }
 
-    onProgress?.("Invoking Claude Code CLI...");
+    this.currentStudyAbortController?.abort();
+    const controller = new AbortController();
+    this.currentStudyAbortController = controller;
+    const { signal } = controller;
 
-    type CliResult = { text?: string; error?: string };
-    return await new Promise<CliResult>((resolve) => {
-      let stdout = "";
-      let stderr = "";
-      let settled = false;
+    try {
+      const config = configHelper.loadConfig();
+      const language = await this.getLanguage();
+      const prompt = buildStudyPrompt(paths, language);
+      const mainWindow = this.deps.getMainWindow();
+      const onProgress = (message: string) =>
+        mainWindow?.webContents.send("processing-status", { message, progress: 50 });
 
-      const child = spawn(executable, args, {
-        shell: false,
-        windowsHide: true,
-        env: process.env,
-        // Pipe stdin so we can write the prompt safely (avoids any argv
-        // quoting/escaping pitfalls and any flag-parser variadic collisions).
-        stdio: ["pipe", "pipe", "pipe"],
-      });
+      let text: string | undefined;
 
-      // Write the prompt to stdin and close it.
-      try {
-        child.stdin.write(prompt);
-        child.stdin.end();
-      } catch (err) {
-        // If stdin is already closed (e.g. process died on spawn), the error
-        // event below will fire — nothing else to do here.
+      if (config.apiProvider === "claude-code") {
+        const result = await runClaudeCli({
+          prompt,
+          imagePaths: paths,
+          model: config.solutionModel || "sonnet",
+          signal,
+          onProgress,
+        });
+        if (result.error) return { success: false, error: result.error };
+        text = result.text;
+      } else {
+        const images = paths.map(p => fs.readFileSync(p).toString("base64"));
+        const apiPrompt = buildStudyPrompt(null, language);
+        if (config.apiProvider === "openai") {
+          if (!this.openaiClient) return { success: false, error: "OpenAI API key not configured. Please check your settings." };
+          const r = await this.openaiClient.chat.completions.create({
+            model: config.solutionModel || "gpt-4o",
+            max_tokens: 4000,
+            temperature: 0.2,
+            messages: [{
+              role: "user",
+              content: [
+                { type: "text", text: apiPrompt },
+                ...images.map(d => ({ type: "image_url" as const, image_url: { url: `data:image/png;base64,${d}` } }))
+              ]
+            }]
+          }, { signal });
+          text = r.choices[0].message.content ?? undefined;
+        } else if (config.apiProvider === "anthropic") {
+          if (!this.anthropicClient) return { success: false, error: "Anthropic API key not configured. Please check your settings." };
+          const r = await this.anthropicClient.messages.create({
+            model: config.solutionModel || "claude-3-7-sonnet-20250219",
+            max_tokens: 4000,
+            temperature: 0.2,
+            messages: [{
+              role: "user",
+              content: [
+                { type: "text", text: apiPrompt },
+                ...images.map(d => ({
+                  type: "image" as const,
+                  source: { type: "base64" as const, media_type: "image/png" as const, data: d }
+                }))
+              ]
+            }]
+          }, { signal });
+          text = (r.content[0] as { type: "text"; text: string }).text;
+        } else if (config.apiProvider === "gemini") {
+          if (!this.geminiApiKey) return { success: false, error: "Gemini API key not configured. Please check your settings." };
+          const r = await axios.default.post(
+            `https://generativelanguage.googleapis.com/v1beta/models/${config.solutionModel || "gemini-2.0-flash"}:generateContent?key=${this.geminiApiKey}`,
+            {
+              contents: [{ role: "user", parts: [{ text: apiPrompt }, ...images.map(d => ({ inlineData: { mimeType: "image/png", data: d } }))] }],
+              generationConfig: { temperature: 0.2, maxOutputTokens: 4000 }
+            },
+            { signal }
+          );
+          text = (r.data as GeminiResponse).candidates?.[0]?.content?.parts?.[0]?.text;
+        }
       }
 
-      const onAbort = () => {
-        if (settled) return;
-        try { child.kill("SIGTERM"); } catch {}
-      };
-      signal.addEventListener("abort", onAbort, { once: true });
-
-      child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
-      child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
-
-      child.on("error", (err: NodeJS.ErrnoException) => {
-        if (settled) return;
-        settled = true;
-        signal.removeEventListener("abort", onAbort);
-        if (err.code === "ENOENT") {
-          resolve({
-            error:
-              "Claude Code CLI not found. Install it (https://docs.claude.com/en/docs/claude-code) " +
-              "or set CLAUDE_CLI_PATH to its location.",
-          });
-        } else {
-          resolve({ error: `Failed to spawn claude: ${err.message}` });
-        }
-      });
-
-      child.on("close", (code) => {
-        if (settled) return;
-        settled = true;
-        signal.removeEventListener("abort", onAbort);
-
-        if (signal.aborted) {
-          resolve({ error: "Processing was canceled by the user." });
-          return;
-        }
-
-        if (code !== 0) {
-          const tail = (stderr || stdout).trim().split("\n").slice(-5).join("\n");
-          resolve({
-            error: `Claude Code CLI exited with code ${code}.${tail ? `\n${tail}` : ""}`,
-          });
-          return;
-        }
-
-        // The JSON wrapper looks like:
-        //   {"type":"result","subtype":"success","is_error":false,"result":"...","..."}
-        try {
-          const parsed = JSON.parse(stdout);
-          if (parsed && typeof parsed.result === "string" && !parsed.is_error) {
-            resolve({ text: parsed.result });
-          } else {
-            resolve({
-              error: parsed?.result || parsed?.error || "Claude Code CLI returned an error response.",
-            });
-          }
-        } catch (parseErr: any) {
-          resolve({
-            error: `Failed to parse Claude Code CLI output: ${parseErr.message}\nRaw: ${stdout.slice(0, 500)}`,
-          });
-        }
-      });
-    });
-  }
-
-  /**
-   * Strip ```json ... ``` fences and parse JSON, lenient about leading prose.
-   */
-  private parseLooseJson(text: string): any {
-    const cleaned = text.replace(/```json|```/g, "").trim();
-    // First try direct parse
-    try { return JSON.parse(cleaned); } catch {}
-    // Fall back to extracting the first {...} block
-    const match = cleaned.match(/\{[\s\S]*\}/);
-    if (match) return JSON.parse(match[0]);
-    throw new Error("No JSON object found in CLI response");
+      if (!text) return { success: false, error: "The model returned an empty response." };
+      try {
+        return { success: true, data: parseStudyResult(text) };
+      } catch (err: any) {
+        console.error("Study response parse failure:", err.message, text.slice(0, 500));
+        return { success: false, error: "Could not understand the model's reply. Try a clearer screenshot." };
+      }
+    } catch (error: any) {
+      if (signal.aborted || axios.isCancel(error)) {
+        return { success: false, error: "Processing was canceled by the user." };
+      }
+      console.error("Study analysis error:", error);
+      return { success: false, error: error?.message || "Failed to analyze the question." };
+    } finally {
+      if (this.currentStudyAbortController === controller) this.currentStudyAbortController = null;
+    }
   }
 
   public async processScreenshots(): Promise<void> {
@@ -760,7 +707,7 @@ After reading them, return ONLY a JSON object (no prose, no markdown fences) wit
 
 The user's preferred coding language for the eventual solution is ${language}.`;
 
-        const result = await this.runClaudeCli({
+        const result = await runClaudeCli({
           prompt: extractionPrompt,
           imagePaths: screenshots.map(s => s.path),
           model: config.extractionModel || "sonnet",
@@ -1047,7 +994,7 @@ Your solution should be efficient, well-commented, and handle edge cases.
         }
       } else if (config.apiProvider === "claude-code") {
         // Solve stage uses no images — just text via the CLI.
-        const result = await this.runClaudeCli({
+        const result = await runClaudeCli({
           prompt: `You are an expert coding interview assistant. Provide a clear, optimal solution with detailed explanations for this problem:\n\n${promptText}`,
           imagePaths: [],
           model: config.solutionModel || "sonnet",
@@ -1409,7 +1356,7 @@ Here provide a clear explanation of why the changes are needed
 
 If you include code examples, use proper markdown code blocks with language specification.`;
 
-        const result = await this.runClaudeCli({
+        const result = await runClaudeCli({
           prompt: debugPrompt,
           imagePaths: screenshots.map(s => s.path),
           model: config.debuggingModel || "sonnet",
@@ -1573,6 +1520,11 @@ If you include code examples, use proper markdown code blocks with language spec
       this.currentExtraProcessingAbortController.abort()
       this.currentExtraProcessingAbortController = null
       wasCancelled = true
+    }
+
+    if (this.currentStudyAbortController) {
+      this.currentStudyAbortController.abort()
+      this.currentStudyAbortController = null
     }
 
     this.deps.setHasDebugged(false)

@@ -11,6 +11,7 @@ interface QueueCommandsProps {
   credits: number
   currentLanguage: string
   setLanguage: (language: string) => void
+  onStudy?: () => void
 }
 
 const QueueCommands: React.FC<QueueCommandsProps> = ({
@@ -18,7 +19,8 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
   screenshotCount = 0,
   credits,
   currentLanguage,
-  setLanguage
+  setLanguage,
+  onStudy
 }) => {
   const [isTooltipVisible, setIsTooltipVisible] = useState(false)
   const tooltipRef = useRef<HTMLDivElement>(null)
@@ -191,6 +193,16 @@ const QueueCommands: React.FC<QueueCommandsProps> = ({
                   </button>
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* Study Command: explain a theory / aptitude question */}
+          {screenshotCount > 0 && onStudy && (
+            <div
+              className="flex flex-col cursor-pointer rounded px-2 py-1.5 hover:bg-white/10 transition-colors"
+              onClick={onStudy}
+            >
+              <span className="text-[11px] leading-none">Study</span>
             </div>
           )}
 

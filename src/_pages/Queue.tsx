@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from "react"
 import { useQuery } from "@tanstack/react-query"
 import ScreenshotQueue from "../components/Queue/ScreenshotQueue"
 import QueueCommands from "../components/Queue/QueueCommands"
+import StudyPanel from "../components/Study/StudyPanel"
+import type { StudyResult } from "../types/electron"
 
 import { useToast } from "../contexts/toast"
 import { Screenshot } from "../types/screenshots"
@@ -34,6 +36,27 @@ const Queue: React.FC<QueueProps> = ({
   const [isTooltipVisible, setIsTooltipVisible] = useState(false)
   const [tooltipHeight, setTooltipHeight] = useState(0)
   const contentRef = useRef<HTMLDivElement>(null)
+
+  const [studyOpen, setStudyOpen] = useState(false)
+  const [studyLoading, setStudyLoading] = useState(false)
+  const [studyResult, setStudyResult] = useState<StudyResult | null>(null)
+  const [studyError, setStudyError] = useState<string | null>(null)
+
+  const handleStudy = async () => {
+    setStudyOpen(true)
+    setStudyLoading(true)
+    setStudyResult(null)
+    setStudyError(null)
+    try {
+      const res = await window.electronAPI.studyAnalyze()
+      if (res.success && res.data) setStudyResult(res.data)
+      else setStudyError(res.error || "Failed to analyze the question.")
+    } catch (err: any) {
+      setStudyError(err?.message || "Failed to analyze the question.")
+    } finally {
+      setStudyLoading(false)
+    }
+  }
 
   const {
     data: screenshots = [],
@@ -152,7 +175,17 @@ const Queue: React.FC<QueueProps> = ({
             credits={credits}
             currentLanguage={currentLanguage}
             setLanguage={setLanguage}
+            onStudy={handleStudy}
           />
+
+          {studyOpen && (
+            <StudyPanel
+              loading={studyLoading}
+              result={studyResult}
+              error={studyError}
+              onClose={() => setStudyOpen(false)}
+            />
+          )}
         </div>
       </div>
     </div>

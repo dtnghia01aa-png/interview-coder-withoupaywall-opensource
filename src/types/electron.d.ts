@@ -1,3 +1,15 @@
+export interface StudyResult {
+  question: string
+  question_type: string
+  options: string[]
+  answer: string
+  confidence: "high" | "medium" | "low"
+  reasoning: string[]
+  why_not_others: string[]
+  key_concepts: string[]
+  study_tip: string
+}
+
 export interface ElectronAPI {
   // Original methods
   openSubscriptionPortal: (authData: {
@@ -58,6 +70,11 @@ export interface ElectronAPI {
   updateConfig: (config: { apiKey?: string; model?: string }) => Promise<boolean>
   checkApiKey: () => Promise<boolean>
   validateApiKey: (apiKey: string) => Promise<{ valid: boolean; error?: string }>
+  studyAnalyze: () => Promise<{
+    success: boolean
+    data?: StudyResult
+    error?: string
+  }>
   testClaudeCli: () => Promise<{
     ok: boolean
     executable: string

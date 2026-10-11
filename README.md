@@ -56,6 +56,8 @@ All it takes is modest JavaScript/TypeScript knowledge and understanding of the 
 - 🤖 AI-Powered Analysis: Automatically extracts and analyzes coding problems using GPT-4o
 - 💡 Solution Generation: Get detailed explanations and solutions with time/space complexity analysis
 - 🔧 Real-time Debugging: Debug your code with AI assistance and structured feedback
+- 🧠 Study Mode: Capture a theory, IQ/logic or technical-concept question and click **Study** for a guided explanation (reasoning, why the other options fail, concepts to review). The answer is hidden until you click *Reveal*, so you can attempt it first. Intended for learning and practice review.
+- 🖥️ Claude Code provider: Use your existing Claude Code CLI session instead of an API key (Settings → Claude Code). Works with Study Mode too.
 - 🎨 Advanced Window Management: Freely move, resize, change opacity, and zoom the window
 - 🔄 Model Selection: Choose between GPT-4o and GPT-4o-mini for different processing stages
 - 🔒 Privacy-Focused: Your API key and data never leave your computer except for OpenAI API calls
@@ -254,6 +256,14 @@ The packaged applications will be available in the `release` directory.
    - Use arrow keys for keyboard navigation through available languages
    - The system dynamically adapts to any languages added or removed from the codebase
    - Your language preference is saved between sessions
+
+## Testing
+
+```bash
+npm test                      # unit + fake-CLI end-to-end tests (no network)
+CLAUDE_LIVE=1 npm test        # also pings the real `claude` CLI
+CLAUDE_LIVE=1 CLAUDE_LIVE_IMAGE=path/to/question.png npm test   # full Study Mode flow
+```
 
 ## Adding More AI Models
 
